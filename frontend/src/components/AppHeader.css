@@ -1,0 +1,55 @@
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 24px;
+  background: var(--panel);
+  color: #fff;
+}
+
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.app-header__mark {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--signal);
+  border-radius: 50%;
+}
+
+.app-header__user {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--panel-ink);
+  font-size: 14px;
+}
+
+.app-header__user button {
+  padding: 6px 12px;
+  border: 1px solid rgba(199, 211, 221, 0.3);
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.app-header__user button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    padding: 0 16px;
+  }
+
+  .app-header__user span {
+    display: none;
+  }
+}
