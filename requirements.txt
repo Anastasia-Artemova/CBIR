@@ -1,0 +1,10 @@
+numpy==1.26.4
+pyradiomics==3.0.1
+SimpleITK
+fastapi
+uvicorn[standard]
+python-multipart
+requests
+python-dotenv
+pydantic
+psycopg[binary]>=3.2,<4
