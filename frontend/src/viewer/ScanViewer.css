@@ -1,0 +1,40 @@
+.scan-viewer {
+  position: relative;
+  width: 100%;
+  height: min(70vh, 560px);
+  min-height: 280px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #000;
+}
+
+.scan-viewer__canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.scan-viewer__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: #c7d3dd;
+  font-size: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.scan-viewer__overlay--error {
+  color: #fda29b;
+}
+
+.scan-viewer__hud {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  color: #c7d3dd;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 12px;
+  pointer-events: none;
+}
