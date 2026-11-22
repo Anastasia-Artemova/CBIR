@@ -1,84 +1,66 @@
-import { useEffect, useRef, useState } from 'react'
-import { uploadScan, type Scan } from '../../api/scans'
-import { DEFAULT_TOP_K, getSearch, startSearch } from '../../api/search'
+import { useEffect, useState } from 'react'
+import { apiConfig } from '../../api/config'
+import {
+  DEFAULT_TOP_K,
+  checkHealth,
+  extractRadiomics,
+  runSegmentation,
+  similaritySearch,
+  uploadToXnat,
+} from '../../api/pipeline'
 import { AppHeader } from '../../components/AppHeader'
 import type { LocalScan } from '../../viewer/cornerstone'
 import { ScanViewer } from '../../viewer/ScanViewer'
-import { CollectionPanel } from './CollectionPanel'
-import { localScanFiles } from './localFiles'
+import { ResultsList } from './ResultsList'
 import { SearchProgress, type RunState } from './SearchProgress'
 import { UploadPanel } from './UploadPanel'
 import './HomePage.css'
 
-type Source = 'upload' | 'collection'
-
-const POLL_MS = 1500
-
 export function HomePage() {
-  const [source, setSource] = useState<Source>('upload')
-  const [localScan, setLocalScan] = useState<LocalScan | null>(null)
-  const [storedScan, setStoredScan] = useState<Scan | null>(null)
+  const [scan, setScan] = useState<LocalScan | null>(null)
   const [run, setRun] = useState<RunState>({ phase: 'idle' })
-  const pollTimer = useRef<number | undefined>(undefined)
-  const mounted = useRef(true)
+  const [serverOnline, setServerOnline] = useState<boolean | null>(null)
 
   useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-      window.clearTimeout(pollTimer.current)
-    }
+    checkHealth().then(setServerOnline)
   }, [])
 
-  const busy = run.phase === 'uploading' || run.phase === 'running'
-  const locked = busy || run.phase === 'completed'
-  const ready = source === 'upload' ? localScan !== null : storedScan !== null
+  // new uploads go into (set in .env.local)--> the folder in XNAT 
+  const xnat = apiConfig.xnat
+  const xnatSet = xnat.project !== '' && xnat.subject !== '' && xnat.experiment !== ''
+
+  const running = run.phase !== 'idle' && run.phase !== 'completed' && run.phase !== 'failed'
+  const canRun = scan !== null && xnatSet
 
   async function handleRun() {
+    if (!scan) return
+    if (scan.format !== 'NIfTI') {
+      setRun({ phase: 'failed', message: 'The backend accepts NIfTI files (.nii, .nii.gz) only.' })
+      return
+    }
+
     try {
-      let scanId: number
-      if (source === 'upload' && localScan) {
-        setRun({ phase: 'uploading', progress: 0 })
-        const stored = await uploadScan(localScanFiles(localScan), localScan.format, (progress) =>
-          setRun({ phase: 'uploading', progress }),
-        )
-        scanId = stored.id
-      } else if (storedScan) {
-        scanId = storedScan.id
-      } else {
-        return
-      }
+      setRun({ phase: 'uploading' })
+      const upload = await uploadToXnat(scan.file, xnat)
 
-      const job = await startSearch(scanId, DEFAULT_TOP_K)
-      if (!mounted.current) return
-      setRun({ phase: 'running', status: job.status })
+      setRun({ phase: 'segmenting' })
+      const segmentation = await runSegmentation(xnat, upload)
 
-      const poll = async () => {
-        try {
-          const current = await getSearch(job.id)
-          if (!mounted.current) return
-          if (current.status === 'completed') setRun({ phase: 'completed', searchId: current.id })
-          else if (current.status === 'failed')
-            setRun({ phase: 'failed', message: current.error || 'The analysis failed.' })
-          else {
-            setRun({ phase: 'running', status: current.status })
-            pollTimer.current = window.setTimeout(poll, POLL_MS)
-          }
-        } catch (err) {
-          setRun({ phase: 'failed', message: err instanceof Error ? err.message : 'Lost contact with the server.' })
-        }
-      }
-      pollTimer.current = window.setTimeout(poll, POLL_MS)
+      setRun({ phase: 'extracting' })
+      await extractRadiomics(xnat, upload, segmentation)
+
+      setRun({ phase: 'searching' })
+      const results = await similaritySearch(xnat, upload, segmentation, DEFAULT_TOP_K)
+
+      setRun({ phase: 'completed', results: results })
     } catch (err) {
-      setRun({ phase: 'failed', message: err instanceof Error ? err.message : 'The request failed.' })
+      setRun({ phase: 'failed', message: err instanceof Error ? err.message : 'Something went wrong.' })
     }
   }
 
   function reset() {
-    window.clearTimeout(pollTimer.current)
     setRun({ phase: 'idle' })
-    setLocalScan(null)
-    setStoredScan(null)
+    setScan(null)
   }
 
   return (
@@ -86,83 +68,73 @@ export function HomePage() {
       <AppHeader />
       <main className="home">
         <div className="home__intro">
-          <h1>similarity search</h1>
-          <p>
-            Choose a query scan. It will be segmented, its radiomic features extracted, and the most similar cases
-            found.
-          </p>
+          <h1>Similarity search</h1>
+          <p>Upload a CT scan. It will be segmented, its radiomic features extracted, and the most similar cases found.</p>
         </div>
 
         <div className="home__grid">
           <div className="home__main">
+            {/* choose a scan */}
             <section className="card">
               <h2 className="card__title">
                 <span className="card__step">1</span> Query scan
               </h2>
-              <div className="tabs" role="tablist">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={source === 'upload'}
-                  className={source === 'upload' ? 'tabs__tab tabs__tab--active' : 'tabs__tab'}
-                  onClick={() => setSource('upload')}
-                  disabled={locked}
-                >
-                  Upload new scan
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={source === 'collection'}
-                  className={source === 'collection' ? 'tabs__tab tabs__tab--active' : 'tabs__tab'}
-                  onClick={() => setSource('collection')}
-                  disabled={locked}
-                >
-                  From stored collection
-                </button>
-              </div>
-
-              {source === 'upload' ? (
-                <UploadPanel scan={localScan} disabled={locked} onChange={setLocalScan} />
-              ) : (
-                <CollectionPanel selectedId={storedScan?.id ?? null} disabled={locked} onSelect={setStoredScan} />
-              )}
+              <UploadPanel scan={scan} disabled={run.phase !== 'idle'} onChange={setScan} />
             </section>
 
+            {/* preview of chosen scan */}
             <section className="card">
               <h2 className="card__title">Preview</h2>
-              <Preview source={source} localScan={localScan} storedScan={storedScan} />
+              {scan ? (
+                <>
+                  <ScanViewer scan={scan} />
+                  <p className="hint">
+                    Scroll to change slice · drag for window/level · right-drag to zoom · middle-drag to pan
+                  </p>
+                </>
+              ) : (
+                <div className="empty-preview">Your scan will appear here once you choose it.</div>
+              )}
             </section>
           </div>
 
+          {/* run the analysis */}
           <aside className="home__side">
             <section className="card">
               <h2 className="card__title">
                 <span className="card__step">2</span> Analyse and search
               </h2>
+
               {run.phase === 'idle' && (
                 <>
-                  <p className="muted">
-                    Returns the top {DEFAULT_TOP_K} matches, ranked by a fusion of radiomic features and tumour
-                    embeddings.
-                  </p>
-                  <button type="button" className="primary-button" disabled={!ready} onClick={handleRun}>
+                  <p className="muted">Returns the top {DEFAULT_TOP_K} most similar cases, ranked by radiomic features.</p>
+                  <button type="button" className="primary-button" disabled={!canRun} onClick={handleRun}>
                     Run analysis and search
                   </button>
-                  {!ready && <p className="hint">Choose a scan first.</p>}
+                  {!scan && <p className="hint">Choose a scan first.</p>}
+                  {!xnatSet && (
+                    <p className="form-error">
+                      Set VITE_XNAT_PROJECT, VITE_XNAT_SUBJECT and VITE_XNAT_EXPERIMENT in .env.local, then restart npm
+                      run dev.
+                    </p>
+                  )}
+                  {serverOnline === true && <p className="hint">Analysis server connected.</p>}
+                  {serverOnline === false && (
+                    <p className="form-error">Cannot reach the analysis server at {apiConfig.backendUrl}.</p>
+                  )}
                 </>
               )}
 
-              {run.phase !== 'idle' && <SearchProgress run={run} includeUpload={source === 'upload'} />}
+              {run.phase !== 'idle' && <SearchProgress run={run} />}
+
+              {running && <p className="hint">Segmentation can take a few minutes. Keep this tab open.</p>}
 
               {run.phase === 'completed' && (
                 <div className="result-ready">
                   <p>
-                    <strong>Analysis complete.</strong> The top {DEFAULT_TOP_K} matches are ready.
+                    <strong>Analysis complete.</strong>{' '}
+                    {run.results.length === 0 ? 'No similar cases were found.' : 'The most similar cases are below.'}
                   </p>
-                  <button type="button" className="primary-button" disabled title="The results page is built next">
-                    View results
-                  </button>
                   <button type="button" className="link-button" onClick={reset}>
                     Start a new search
                   </button>
@@ -180,61 +152,17 @@ export function HomePage() {
             </section>
           </aside>
         </div>
+
+        {/* results */}
+        {run.phase === 'completed' && run.results.length > 0 && (
+          <section className="card results">
+            <h2 className="card__title">
+              <span className="card__step">3</span> Similar cases 
+            </h2>
+            <ResultsList results={run.results} />
+          </section>
+        )}
       </main>
     </div>
   )
-}
-
-function Preview({
-  source,
-  localScan,
-  storedScan,
-}: {
-  source: Source
-  localScan: LocalScan | null
-  storedScan: Scan | null
-}) {
-  if (source === 'upload') {
-    if (!localScan) return <EmptyPreview text="Your scan will appear here once you choose it." />
-    return (
-      <>
-        <ScanViewer scan={localScan} />
-        <p className="hint">Scroll to change slice · drag for window/level · right-drag to zoom · middle-drag to pan</p>
-      </>
-    )
-  }
-
-  if (!storedScan) return <EmptyPreview text="Select a scan from the collection to see its details." />
-  const details: Array<[string, unknown]> = [
-    ['Project', storedScan.xnatProjectId],
-    ['Subject', storedScan.xnatSubjectId],
-    ['Experiment', storedScan.xnatExperimentId],
-    ['Scan', storedScan.xnatScanId],
-    ['File', storedScan.xnatFileName],
-    ['Modality', storedScan.modality],
-    ['Format', storedScan.imageFormat],
-    ...Object.entries(storedScan.metadata).map(([key, value]): [string, unknown] => [humanize(key), value]),
-  ]
-  return (
-    <>
-      <EmptyPreview text="Image preview will load from XNAT once the backend is connected." />
-      <dl className="details">
-        {details.map(([label, value]) => (
-          <div key={label} className="details__row">
-            <dt>{label}</dt>
-            <dd>{value === null || value === undefined || value === '' ? '—' : String(value)}</dd>
-          </div>
-        ))}
-      </dl>
-    </>
-  )
-}
-
-function EmptyPreview({ text }: { text: string }) {
-  return <div className="empty-preview">{text}</div>
-}
-
-function humanize(key: string) {
-  const spaced = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase()
 }
